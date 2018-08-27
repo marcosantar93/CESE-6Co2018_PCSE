@@ -40,7 +40,6 @@ static int inpub_id;
  * C++ version 0.4 char* style "itoa":
  * Written by Lukás Chmela
  * Released under GPLv3.
-
  */
 char* itoa(int value, char* result, int base) {
 	// check that the base if valid
@@ -72,43 +71,52 @@ char* itoa(int value, char* result, int base) {
 	return result;
 }
 
-/* Called when publish is complete either with sucess or failure */
+/**
+ * Publish request status callback. Called when publish is complete either with success or failure
+ * @param arg User supplied argument to sub request callback
+ * @param err Error encountered
+ */
 void mqtt_pub_request_cb(void *arg, err_t result) {
 	if (result != ERR_OK) {
 		printf("Publish result: %d\n", result);
 	}
 }
 
-// Using outgoing publish
-
+/**
+ * Outgoing publish
+ * @param client MQTT Client
+ * @param arg User supplied message to publish
+ */
 void mqtt_client_publish(mqtt_client_t *client, void *arg) {
+	err_t err = ERR_OK;
+
 	messageMqtt_t *msg = (messageMqtt_t*) arg;
-	if (msg != NULL) {
-		err_t err;
+	if (msg != NULL)
 		err = mqtt_publish(client, msg->topic, msg->payload,
 				strlen(msg->payload), msg->qos, msg->retain,
-				mqtt_pub_request_cb, NULL); //What's better, a general callback or unique callbacks?
-		if (err != ERR_OK) {
-			printf("Publish err: %d\n", err);
-		}
-	} else {
-		err_t err;
-		err = mqtt_publish(client, "PW/V2/CIAA_NXP/TEST", "ERROR:ARGSTOFUNC",
-				strlen("ERROR:ARGSTOFUNC"), 0, 0, mqtt_pub_request_cb, NULL); //What's better, a general callback or unique callbacks?
-		if (err != ERR_OK) {
-			printf("Publish err: %d\n", err);
-		}
+				mqtt_pub_request_cb, NULL);
+
+	if (err != ERR_OK) {
+		/* Whenever we can not forward a message, it's because we were disconnected. */
+		NVIC_SystemReset(); /* Reset is a drastic solution, but the easiest way to set up the environment once again*/
+		printf("Publish err: %d\n", err);
 	}
 }
 
-// Implementing callbacks for incoming publish and data
-
-/* The idea is to demultiplex topic and create some reference to be used in data callbacks
+/* Implementing callbacks for incoming publish and data
+ * The idea is to demultiplex topic and create some reference to be used in data callbacks
  Example here uses a global variable, better would be to use a member in arg
  If RAM and CPU budget allows it, the easiest implementation might be to just take a copy of
  the topic string and use it in mqtt_incoming_data_cb
  */
 
+/**
+ * Incomming data callback
+ * @param arg User supplied argument to incoming data callback
+ * @param data Array with the received payload
+ * @param len Length of the payload
+ * @param flags See Data callback flags
+ */
 void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
 	printf("Incoming publish payload with length %d, flags %u\n", len,
 			(unsigned int) flags);
@@ -133,6 +141,12 @@ void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
 	}
 }
 
+/**
+ * Incoming publish callback
+ * @param arg User supplied argument to incoming publish callback
+ * @param topic MQTT Topic in which the message was received
+ * @param tot_len Total length in characters of the publish
+ */
 void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len) {
 	printf("Incoming publish at topic %s with total length %u\n", topic,
 			(unsigned int) tot_len);
@@ -149,11 +163,11 @@ void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len) {
 	}
 }
 
-/*
- -----------------------------------------------------------------
- Implementing the subscription request status callback
+/**
+ * Subscription request status callback
+ * @param arg User supplied argument to sub request callback
+ * @param err Error encountered
  */
-
 void mqtt_sub_request_cb(void *arg, err_t result) {
 	/* Just print the result code here for simplicity,
 	 normal behaviour would be to take some action if subscribe fails like
@@ -161,37 +175,42 @@ void mqtt_sub_request_cb(void *arg, err_t result) {
 	printf("Subscribe result: %d\n", result);
 }
 
-
-/*-----------------------------------------------------------------------------------*/
-
+/**
+ * Test of the mqtt connection. This thread is created when a connection is established and sends a message per second
+ * @param arg MQTT Client
+ */
 static void mqtt_client_test_thread(void *arg) {
 
-	//Cast arg into client
+	/* Cast arg into client */
 	mqtt_client_t *client = (mqtt_client_t*) arg;
-	//If everything is ok, send stuff every second
+	/* If everything is ok, send stuff every second */
 	if (client != NULL) {
 		uint32_t i = 0;
 		char testPayload[20], numBuffer[10];
 		memset(&numBuffer, 0, sizeof(numBuffer));
-		messageMqtt_t msg = { 0, 0, "PW/V2/CIAA_NXP/NY/TEST", "TEST:" };
+		messageMqtt_t msg = { 0, 0, "CIAA_NXP_TEST/1",
+				"1234:0" };
 
 		while (1) {
 			memset(&testPayload, 0, sizeof(testPayload));
 			itoa(i, numBuffer, 10);
-			msg.payload = strcat(testPayload, "TEST:");
+			msg.payload = strcat(testPayload, "1234:");
 			msg.payload = strcat(testPayload, numBuffer);
 			mqtt_client_publish(client, (void*) &msg);
 			vTaskDelay(1000 / portTICK_RATE_MS);
-			i++;
+			i += 100;
+			if (i > 5000)
+				i = 0;
 		}
 	}
 }
 
-/*
- * -----------------------------------------------------------------
- * Implementing the "connection state change" callback
+/**
+ * Connection callback set at mqtt_client_connect()
+ * @param client MQTT client
+ * @param arg User supplied argument to connection callback. NULL in this example
+ * @param status Status of connection
  */
-
 void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		mqtt_connection_status_t status) {
 	err_t err;
@@ -204,8 +223,8 @@ void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 		mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb,
 				mqtt_incoming_data_cb, arg);
 
-		/* Subscribe to a topic named "subtopic" with QoS level 1, call mqtt_sub_request_cb with result */
-		err = mqtt_subscribe(client, "PW/V2/CIAA_NXP/RQ/#", 0,
+		/* Subscribe to a topic named "subtopic" with QoS level 0, call mqtt_sub_request_cb with result */
+		err = mqtt_subscribe(client, "CIAA_NXP_TEST/RQ/#", 0,
 				mqtt_sub_request_cb, arg);
 		if (err != ERR_OK) {
 			printf("mqtt_subscribe return: %d\n", err);
@@ -228,7 +247,9 @@ void mqtt_connection_cb(mqtt_client_t *client, void *arg,
 	}
 }
 
-/*-----------------------------------------------------------------------------------*/
+/**
+ * Initialize client and call connect
+ */
 void mqtt_client_init(void) {
 	mqtt_client_t *client = mqtt_client_new();
 	if (client != NULL) {
@@ -236,8 +257,9 @@ void mqtt_client_init(void) {
 	}
 }
 
-/*
- Establish Connection with server
+/**
+ *  Establish Connection with server
+ * @param client MQTT client
  */
 void mqtt_client_do_connect(mqtt_client_t *client) {
 	struct mqtt_connect_client_info_t ci;
@@ -256,7 +278,7 @@ void mqtt_client_do_connect(mqtt_client_t *client) {
 
 	ip_addr_t ip_addr;
 
-	IP4_ADDR(&ip_addr, 142, 93, 0, 227);
+	IP4_ADDR(&ip_addr, 198, 41, 30, 241); //iot.eclipse.org
 
 	err = mqtt_client_connect(client, &ip_addr, MQTT_PORT, mqtt_connection_cb,
 	NULL, &ci);
